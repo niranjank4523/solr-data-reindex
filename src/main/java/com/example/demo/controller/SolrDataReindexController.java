@@ -17,7 +17,7 @@ public class SolrDataReindexController {
   private SolrDataReindexService solrDataReindexService;
 
   @RequestMapping(value = "/reindex/organization/{unitId}")
-  public Result reindex(@PathVariable int unitId) throws IOException, SolrServerException {
+  public Result reindex(@PathVariable int unitId) throws Exception {
     return solrDataReindexService.reindex(unitId);
   }
 }
