@@ -5,13 +5,13 @@ import java.util.List;
 
 public class Result {
 
+  Integer unitId;
   List<String> idsUpdated = new ArrayList<>();
   List<String> errors = new ArrayList<>();
   int totalUpdated;
 
-  public Result(List<String> idsUpdated, List<String> errors) {
-    this.idsUpdated = idsUpdated;
-    this.errors = errors;
+  public Result(Integer unitId) {
+    this.unitId = unitId;
   }
 
   public List<String> getErrors() {

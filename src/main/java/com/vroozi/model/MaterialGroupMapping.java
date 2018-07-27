@@ -17,6 +17,14 @@ public class MaterialGroupMapping {
 
   private String companyLabel;
 
+  public String getId() {
+    return id;
+  }
+
+  public void setId(String id) {
+    this.id = id;
+  }
+
   public int getUnitId() {
     return unitId;
   }
