@@ -1,3 +1,3 @@
 # solr-data-reindex
 
-http://localhost:8080/reindex/organization/{unitId}
+http://localhost:8080/reindex
