@@ -15,6 +15,8 @@ import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.solr.client.solrj.SolrQuery;
@@ -29,8 +31,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
 
 @Service
 public class SolrDataReindexService {
@@ -57,10 +59,30 @@ public class SolrDataReindexService {
 
   public SolrReindexProcess submitSolrReindexingProcess(Integer unitId) {
     SolrReindexProcess solrReindexProcess = new SolrReindexProcess(unitId);
-    return solrReindexProcessRepository.save(solrReindexProcess);
+    solrReindexProcess = solrReindexProcessRepository.save(solrReindexProcess);
+    TimerTask task = new TimerTask() {
+      public void run() {
+        processSolrReindexing();
+      }
+    };
+    Timer timer = new Timer("SolrReindexingTimer");
+    long delay = 1000L;
+    timer.schedule(task, delay);
+    return solrReindexProcess;
   }
 
-  @Scheduled(cron = "${solr.reindexing.cron.expression}")
+  public String submitRetryFailedBatchExecution(List<Integer> unitIds) {
+    TimerTask task = new TimerTask() {
+      public void run() {
+        processFailedBatches(unitIds);
+      }
+    };
+    Timer timer = new Timer("SolrRetryTimer");
+    long delay = 1000L;
+    timer.schedule(task, delay);
+    return "success";
+  }
+
   public void processSolrReindexing() {
     SolrReindexProcess solrReindexProcess = solrReindexProcessRepository
         .findByProcessTypeAndProcessState(ProcessType.REINDEX, ProcessState.UNPROCESSED);
@@ -81,45 +103,56 @@ public class SolrDataReindexService {
   }
 
   /* Retries the failed batches */
-  @Scheduled(cron = "${solr.retry.cron.expression}")
-  public void processFailedBatches() {
-    SolrReindexProcess solrReindexProcess = solrReindexProcessRepository
-        .findByProcessTypeAndProcessState(ProcessType.RETRY_FAILED, ProcessState.UNPROCESSED);
+  public void processFailedBatches(List<Integer> unitIds) {
+    List<SolrReindexProcess> solrReindexProcesses = solrReindexProcessRepository
+        .findAllByProcessTypeAndProcessStateAndUnitIdIn(ProcessType.RETRY_FAILED,
+            ProcessState.UNPROCESSED, unitIds);
 
-    if (solrReindexProcess != null) {
-      int unitId = solrReindexProcess.getUnitId();
-      if (!solrReindexProcess.getFailedRecords().isEmpty()) {
-        HttpSolrClient solr = new HttpSolrClient.Builder(solrUrl).build();
-        solr.setParser(new XMLResponseParser());
+    if (!CollectionUtils.isEmpty(solrReindexProcesses)) {
+      HttpSolrClient solr = new HttpSolrClient.Builder(solrUrl).build();
+      solr.setParser(new XMLResponseParser());
 
-        /* Fetching list of materialGroupMapping from db */
-        List<MaterialGroupMapping> materialGroupMappingList = materialGroupDao
-            .findByUnitIdOrderByCatalogCategoryCodeDesc(unitId);
-        solrReindexProcess.setProcessState(ProcessState.PROCESSING);
-        solrReindexProcess.setStartTime(new Date());
+      solrReindexProcesses.forEach(solrReindexProcess -> {
+        int unitId = solrReindexProcess.getUnitId();
+        if (!solrReindexProcess.getFailedRecords().isEmpty()) {
+
+          /* Fetching list of materialGroupMapping from db */
+          List<MaterialGroupMapping> materialGroupMappingList = materialGroupDao
+              .findByUnitIdOrderByCatalogCategoryCodeDesc(unitId);
+          solrReindexProcess.setProcessState(ProcessState.PROCESSING);
+          solrReindexProcess.setStartTime(new Date());
+          solrReindexProcessRepository.save(solrReindexProcess);
+          processingFailedBatchForUnitId(solr, solrReindexProcess, unitId,
+              materialGroupMappingList);
+        }
+
+        solrReindexProcess.setEndTime(new Date());
+        solrReindexProcess.setProcessState(ProcessState.COMPLETED);
         solrReindexProcessRepository.save(solrReindexProcess);
-
-        /* Processing failed batches against a unitId */
-        solrReindexProcess.getFailedRecords().forEach(failedRecord -> {
-          Result result = new Result(unitId);
-          try {
-            QueryResponse response = getQueryResponse(solr, failedRecord.getStart(),
-                failedRecord.getRecordsPerPage(), unitId);
-            List<SolrInputDocument> solrInputDocumentList = processSolrInputDocuments(unitId,
-                response, materialGroupMappingList, result);
-            /* Adding solrInputDocument to solr in batches, log the batches in db if solr.commit fails */
-            commitSolrBatch(unitId, solr, failedRecord.getStart(), failedRecord.getRecordsPerPage(),
-                solrInputDocumentList);
-            solrReindexProcess.getResults().add(result);
-          } catch (Exception e) {
-            LOGGER.error("Exception occurred while retrying failed records ", e);
-          }
-        });
-      }
-      solrReindexProcess.setEndTime(new Date());
-      solrReindexProcess.setProcessState(ProcessState.COMPLETED);
-      solrReindexProcessRepository.save(solrReindexProcess);
+      });
     }
+  }
+
+  private void processingFailedBatchForUnitId(HttpSolrClient solr,
+      SolrReindexProcess solrReindexProcess, int unitId,
+      List<MaterialGroupMapping> materialGroupMappingList) {
+    /* Processing failed batches against a unitId */
+    solrReindexProcess.getFailedRecords().forEach(failedRecord -> {
+      Result result = new Result(unitId);
+      try {
+        QueryResponse response = getQueryResponse(solr, failedRecord.getStart(),
+            failedRecord.getRecordsPerPage(), unitId);
+        List<SolrInputDocument> solrInputDocumentList = processSolrDocuments(unitId,
+            response, materialGroupMappingList, result);
+      /* Adding solrInputDocument to solr in batches, log the batches in db if solr.commit fails */
+        commitSolrBatch(solr, solrInputDocumentList);
+        solrReindexProcess.getResults().add(result);
+      } catch (Exception e) {
+        logFailedBatch(unitId, failedRecord.getStart(), failedRecord.getRecordsPerPage(),
+            ExceptionUtils.getStackTrace(e));
+        LOGGER.error("Exception occurred while retrying failed records ", e);
+      }
+    });
   }
 
   /* reindexes solr data for catalogItems against given unitId */
@@ -135,22 +168,28 @@ public class SolrDataReindexService {
 
     int start = 0;
     int recordsProcessed = 0;
+    /* Fetch totalPage count, each page will act as batch while processing */
     int totalPage = getTotalPage(unitId, solr);
     QueryResponse response;
     Result result = new Result(unitId);
 
     for (int i = 0; i < totalPage; i++) {
       try {
+        /* Fetching items from solr */
         response = getQueryResponse(solr, start, recordsPerPage, unitId);
-        List<SolrInputDocument> solrInputDocumentList = processSolrInputDocuments(unitId, response,
+
+        /* Processes response solrDocuments to return List of SolrInputDocument,
+           which will be used for solr data updation */
+        List<SolrInputDocument> solrInputDocumentList = processSolrDocuments(unitId, response,
             materialGroupMappingList, result);
         recordsProcessed += solrInputDocumentList.size();
 
         /* Adding solrInputDocument to solr in batches */
-        commitSolrBatch(unitId, solr, start, recordsPerPage, solrInputDocumentList);
+        commitSolrBatch(solr, solrInputDocumentList);
         LOGGER.info("Records processed from {} to {}.", start, recordsProcessed);
         start = recordsProcessed;
       } catch (Exception e) {
+        logFailedBatch(unitId, start, recordsPerPage, ExceptionUtils.getStackTrace(e));
         LOGGER.error("Exception occurred while reindexing ", e);
       }
     }
@@ -160,7 +199,7 @@ public class SolrDataReindexService {
     LOGGER.info("Reindexing completed for unitId: {}", unitId);
   }
 
-  private List<SolrInputDocument> processSolrInputDocuments(Integer unitId, QueryResponse response,
+  private List<SolrInputDocument> processSolrDocuments(Integer unitId, QueryResponse response,
       List<MaterialGroupMapping> materialGroupMappingList, Result result)
       throws UnsupportedEncodingException {
     List<SolrDocument> solrDocumentList = response.getResults();
@@ -187,16 +226,11 @@ public class SolrDataReindexService {
     return solrInputDocumentList;
   }
 
-  private void commitSolrBatch(Integer unitId, HttpSolrClient solr, int start, int recordsPerPage,
-      List<SolrInputDocument> solrInputDocumentList) {
+  private void commitSolrBatch(HttpSolrClient solr, List<SolrInputDocument> solrInputDocumentList)
+      throws IOException, SolrServerException {
     if (!solrInputDocumentList.isEmpty()) {
-      try {
-        solr.add(solrInputDocumentList);
-        solr.commit();
-      } catch (Exception e) {
-        logFailedBatch(unitId, start, recordsPerPage, ExceptionUtils.getStackTrace(e));
-        LOGGER.error("Error occurred while comitting the batch", e);
-      }
+      solr.add(solrInputDocumentList);
+      solr.commit();
     }
   }
 
@@ -214,10 +248,7 @@ public class SolrDataReindexService {
     solrReindexProcessRepository.save(failedSolrReindexProcess);
   }
 
-  /**
-   * Sets vendor_name_lowercase field if there is existing vendor_name field present
-   */
-
+  /* Sets vendor_name_lowercase field if there is existing vendor_name field present */
   private boolean setVendorData(boolean recordUpdated, SolrInputDocument solrInputDocument) {
     String vendorName = null;
     if (solrInputDocument.get("vendor_name") != null) {
