@@ -8,13 +8,9 @@ public class MaterialGroupMapping {
 
   @Id
   private String id;
-
   private int unitId;
-
   private String catalogCategoryCode;
-
   private String companyCategoryCode;
-
   private String companyLabel;
 
   public String getId() {

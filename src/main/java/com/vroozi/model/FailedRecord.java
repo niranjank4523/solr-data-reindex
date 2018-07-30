@@ -1,9 +1,9 @@
 package com.vroozi.model;
 
 public class FailedRecord {
-  int start;
-  int recordsPerPage;
-  String stackTrace;
+  private int start;
+  private int recordsPerPage;
+  private String stackTrace;
 
   public FailedRecord(int start, int recordsPerPage, String stackTrace) {
     this.start = start;

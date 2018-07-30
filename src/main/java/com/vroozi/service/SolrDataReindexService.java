@@ -6,6 +6,7 @@ import com.vroozi.model.ProcessState;
 import com.vroozi.model.ProcessType;
 import com.vroozi.model.Result;
 import com.vroozi.model.SolrReindexProcess;
+import com.vroozi.repository.CatalogDao;
 import com.vroozi.repository.MaterialGroupDao;
 import com.vroozi.repository.SolrReindexProcessRepository;
 import com.vroozi.util.CategoryMatcher;
@@ -49,6 +50,9 @@ public class SolrDataReindexService {
   private MaterialGroupDao materialGroupDao;
 
   @Autowired
+  private CatalogDao catalogDao;
+
+  @Autowired
   private SolrReindexProcessRepository solrReindexProcessRepository;
 
   /**
@@ -61,29 +65,30 @@ public class SolrDataReindexService {
     SolrReindexProcess solrReindexProcess = new SolrReindexProcess(unitId);
     solrReindexProcess = solrReindexProcessRepository.save(solrReindexProcess);
     TimerTask task = new TimerTask() {
+      @Override
       public void run() {
         processSolrReindexing();
       }
     };
     Timer timer = new Timer("SolrReindexingTimer");
-    long delay = 1000L;
-    timer.schedule(task, delay);
+    timer.schedule(task, 1000L);
     return solrReindexProcess;
   }
 
   public String submitRetryFailedBatchExecution(List<Integer> unitIds) {
     TimerTask task = new TimerTask() {
+      @Override
       public void run() {
         processFailedBatches(unitIds);
       }
     };
     Timer timer = new Timer("SolrRetryTimer");
-    long delay = 1000L;
-    timer.schedule(task, delay);
+    timer.schedule(task, 1000L);
     return "success";
   }
 
   public void processSolrReindexing() {
+    LOGGER.debug("================== Reindexing solr data =============================");
     SolrReindexProcess solrReindexProcess = solrReindexProcessRepository
         .findByProcessTypeAndProcessState(ProcessType.REINDEX, ProcessState.UNPROCESSED);
     if (solrReindexProcess != null) {
@@ -91,9 +96,12 @@ public class SolrDataReindexService {
       solr.setParser(new XMLResponseParser());
       solrReindexProcess.setProcessState(ProcessState.PROCESSING);
       if (solrReindexProcess.getUnitId() != null) {
+        LOGGER.info("=============== Reindex process started for unitId : {} =================",
+            solrReindexProcess.getUnitId());
         reindex(solr, solrReindexProcess, solrReindexProcess.getUnitId());
       } else {
-        materialGroupDao.findAllUnitIds()
+        LOGGER.info("=============== Reindex process started for all companies =================");
+        catalogDao.findDistinctUnitIdsFromCatalogs()
             .forEach(unitId -> reindex(solr, solrReindexProcess, unitId));
       }
       solrReindexProcess.setProcessState(ProcessState.COMPLETED);
@@ -104,6 +112,8 @@ public class SolrDataReindexService {
 
   /* Retries the failed batches */
   public void processFailedBatches(List<Integer> unitIds) {
+    LOGGER.debug("Processing batches for solr data reindexing which failed earlier for unitIds: {}",
+        unitIds);
     List<SolrReindexProcess> solrReindexProcesses = solrReindexProcessRepository
         .findAllByProcessTypeAndProcessStateAndUnitIdIn(ProcessType.RETRY_FAILED,
             ProcessState.UNPROCESSED, unitIds);
@@ -118,7 +128,7 @@ public class SolrDataReindexService {
 
           /* Fetching list of materialGroupMapping from db */
           List<MaterialGroupMapping> materialGroupMappingList = materialGroupDao
-              .findByUnitIdOrderByCatalogCategoryCodeDesc(unitId);
+              .findByUnitId(unitId);
           solrReindexProcess.setProcessState(ProcessState.PROCESSING);
           solrReindexProcess.setStartTime(new Date());
           solrReindexProcessRepository.save(solrReindexProcess);
@@ -138,13 +148,15 @@ public class SolrDataReindexService {
       List<MaterialGroupMapping> materialGroupMappingList) {
     /* Processing failed batches against a unitId */
     solrReindexProcess.getFailedRecords().forEach(failedRecord -> {
+      LOGGER.debug("Processing failed batch for unitId: {}, start: {}, recordsPerPage: {}", unitId,
+          failedRecord.getStart(), failedRecord.getRecordsPerPage());
       Result result = new Result(unitId);
       try {
         QueryResponse response = getQueryResponse(solr, failedRecord.getStart(),
             failedRecord.getRecordsPerPage(), unitId);
         List<SolrInputDocument> solrInputDocumentList = processSolrDocuments(unitId,
             response, materialGroupMappingList, result);
-      /* Adding solrInputDocument to solr in batches, log the batches in db if solr.commit fails */
+        /* Adding solrInputDocument to solr in batches, log the batches in db if solr.commit fails */
         commitSolrBatch(solr, solrInputDocumentList);
         solrReindexProcess.getResults().add(result);
       } catch (Exception e) {
@@ -157,6 +169,7 @@ public class SolrDataReindexService {
 
   /* reindexes solr data for catalogItems against given unitId */
   public void reindex(HttpSolrClient solr, SolrReindexProcess solrReindexProcess, Integer unitId) {
+    LOGGER.info("----------------------------------------------------------------------");
     LOGGER.info("Going to start reindex data for unitId: {}", unitId);
 
     solrReindexProcess.setProcessState(ProcessState.PROCESSING);
@@ -164,12 +177,12 @@ public class SolrDataReindexService {
 
     /* Fetching list of materialGroupMapping from db */
     List<MaterialGroupMapping> materialGroupMappingList = materialGroupDao
-        .findByUnitIdOrderByCatalogCategoryCodeDesc(unitId);
+        .findByUnitId(unitId);
 
     int start = 0;
     int recordsProcessed = 0;
     /* Fetch totalPage count, each page will act as batch while processing */
-    int totalPage = getTotalPage(unitId, solr);
+    int totalPage = getTotalNumberOfPages(unitId, solr);
     QueryResponse response;
     Result result = new Result(unitId);
 
@@ -197,6 +210,7 @@ public class SolrDataReindexService {
     solrReindexProcess.setProcessState(ProcessState.COMPLETED);
     solrReindexProcessRepository.save(solrReindexProcess);
     LOGGER.info("Reindexing completed for unitId: {}", unitId);
+    LOGGER.info("----------------------------------------------------------------------");
   }
 
   private List<SolrInputDocument> processSolrDocuments(Integer unitId, QueryResponse response,
@@ -250,17 +264,17 @@ public class SolrDataReindexService {
 
   /* Sets vendor_name_lowercase field if there is existing vendor_name field present */
   private boolean setVendorData(boolean recordUpdated, SolrInputDocument solrInputDocument) {
+    boolean vendorDataUpdated = recordUpdated;
     String vendorName = null;
     if (solrInputDocument.get("vendor_name") != null) {
       vendorName = solrInputDocument.get("vendor_name").getValue().toString();
     }
 
     if (StringUtils.isNotBlank(vendorName)) {
-      solrInputDocument.removeField("vendor_name_lowercase");
       solrInputDocument.addField("vendor_name_lowercase", vendorName);
-      recordUpdated = true;
+      vendorDataUpdated = true;
     }
-    return recordUpdated;
+    return vendorDataUpdated;
   }
 
   /**
@@ -268,8 +282,8 @@ public class SolrDataReindexService {
    * regarding mat group not found for that particular solrInputDocument.
    */
   private boolean setMaterialGroupData(int unitId, List<String> errors,
-      List<MaterialGroupMapping> materialGroupMappings,
-      SolrInputDocument solrInputDocument, String solrDocumentId)
+      List<MaterialGroupMapping> materialGroupMappings, SolrInputDocument solrInputDocument,
+      String solrDocumentId)
       throws UnsupportedEncodingException {
     boolean updated = false;
     String matGroupLabel;
@@ -286,8 +300,6 @@ public class SolrDataReindexService {
         if (StringUtils.isNotBlank(matGroupLabel)) {
           matGroupInfo = materialGroupMapping.getCompanyCategoryCode() + "|||" + URLEncoder
               .encode(matGroupLabel, "UTF-8");
-          solrInputDocument.removeField("mat_group_label");
-          solrInputDocument.removeField("mat_group_info");
           solrInputDocument.addField("mat_group_label", matGroupLabel);
           solrInputDocument.addField("mat_group_info", matGroupInfo);
           updated = true;
@@ -309,7 +321,7 @@ public class SolrDataReindexService {
    * @param unitId unique identifier for buying organization
    * @param solr solrClient for executing solr query
    */
-  private int getTotalPage(int unitId, HttpSolrClient solr) {
+  private int getTotalNumberOfPages(int unitId, HttpSolrClient solr) {
     QueryResponse response = null;
     int totalPages = 0;
     try {
@@ -362,6 +374,7 @@ public class SolrDataReindexService {
     query.set(CommonParams.Q, "unitid:" + unitId);
     query.set(CommonParams.START, start);
     query.set(CommonParams.ROWS, rows);
+    LOGGER.trace("======== Solr Query: {} ============", query);
     return solr.query(query);
   }
 
