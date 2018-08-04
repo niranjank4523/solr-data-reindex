@@ -10,14 +10,7 @@ import com.vroozi.repository.CatalogDao;
 import com.vroozi.repository.MaterialGroupDao;
 import com.vroozi.repository.SolrReindexProcessRepository;
 import com.vroozi.util.CategoryMatcher;
-import java.io.IOException;
-import java.io.UnsupportedEncodingException;
-import java.net.URLEncoder;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
-import java.util.Timer;
-import java.util.TimerTask;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.solr.client.solrj.SolrQuery;
@@ -35,6 +28,15 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 
+import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+import java.net.URLEncoder;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
+
 @Service
 public class SolrDataReindexService {
 
@@ -45,6 +47,9 @@ public class SolrDataReindexService {
 
   @Value("${records.per.page}")
   int recordsPerPage;
+
+  @Autowired
+  private MaterialGroupMappingService materialGroupMappingService;
 
   @Autowired
   private MaterialGroupDao materialGroupDao;
@@ -175,9 +180,9 @@ public class SolrDataReindexService {
     solrReindexProcess.setProcessState(ProcessState.PROCESSING);
     solrReindexProcessRepository.save(solrReindexProcess);
 
-    /* Fetching list of materialGroupMapping from db */
-    List<MaterialGroupMapping> materialGroupMappingList = materialGroupDao
-        .findByUnitId(unitId);
+    /* Get material group mappings filled with their parent mappings info against given unitId  */
+    List<MaterialGroupMapping> materialGroupMappingList =
+        materialGroupMappingService.getMaterialGroupMappingForReindexing(unitId);
 
     int start = 0;
     int recordsProcessed = 0;
@@ -295,6 +300,7 @@ public class SolrDataReindexService {
     if (StringUtils.isNotBlank(matGroupCode)) {
       MaterialGroupMapping materialGroupMapping = CategoryMatcher
           .findMaterialGroupMappingAgainstItemMatGroup(materialGroupMappings, matGroupCode);
+
       if (materialGroupMapping != null) {
         matGroupLabel = materialGroupMapping.getCompanyLabel();
         if (StringUtils.isNotBlank(matGroupLabel)) {
