@@ -3,6 +3,9 @@ package com.vroozi.model;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 
+import java.util.ArrayList;
+import java.util.List;
+
 @Document(collection = "material_group_mapping_flat_data")
 public class MaterialGroupMapping {
 
@@ -20,6 +23,8 @@ public class MaterialGroupMapping {
   private String matGroupInfoLevel1;
   private String matGroupInfoLevel2;
   private String matGroupInfoLevel3;
+
+  private List<MaterialGroupMapping> children = new ArrayList<>();
 
   public String getId() {
     return id;
@@ -115,5 +120,9 @@ public class MaterialGroupMapping {
 
   public void setMatGroupInfoLevel3(String matGroupInfoLevel3) {
     this.matGroupInfoLevel3 = matGroupInfoLevel3;
+  }
+
+  public List<MaterialGroupMapping> getChildren() {
+    return children;
   }
 }

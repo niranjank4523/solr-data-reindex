@@ -11,6 +11,7 @@ import org.springframework.stereotype.Repository;
 import java.util.List;
 
 import static com.vroozi.util.FieldNames.CommonFields.UNIT_ID;
+import static com.vroozi.util.FieldNames.CommonFields._ID;
 import static com.vroozi.util.FieldNames.MaterialGroupMappingFields.COMPANY_CATEGORY_CODE;
 import static com.vroozi.util.FieldNames.MaterialGroupMappingFields.LEVEL1_VAL;
 import static com.vroozi.util.FieldNames.MaterialGroupMappingFields.LEVEL2_VAL;
@@ -34,10 +35,14 @@ public class MaterialGroupDao {
     return mongoTemplate.find(query, MaterialGroupMapping.class);
   }
 
-  public List<MaterialGroupMapping> findMappingsByUnitIdAtGivenLevel(Integer unitId, int level) {
-
-    Query query = new Query(
-        Criteria.where(UNIT_ID).is(unitId).and(getFieldAccordingToLevel(level)).exists(true));
+  public List<MaterialGroupMapping> findMappingsByUnitIdAtGivenLevel(Integer unitId, int level,
+      List<String> idsToExclude) {
+    Criteria criteria =
+        Criteria.where(UNIT_ID).is(unitId).and(getFieldAccordingToLevel(level)).exists(true);
+    if (idsToExclude != null) {
+      criteria.and(_ID).nin(idsToExclude);
+    }
+    Query query = new Query(criteria);
     return mongoTemplate.find(query, MaterialGroupMapping.class);
   }
 

@@ -11,9 +11,11 @@ import org.springframework.util.CollectionUtils;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * @author Muhammad Haris
@@ -36,20 +38,27 @@ public class MaterialGroupMappingServiceImpl implements MaterialGroupMappingServ
     Collection<MaterialGroupMapping> materialGroupLevel2Mappings = null;
 
     List<MaterialGroupMapping> materialGroupLevel3Mappings =
-        materialGroupDao.findMappingsByUnitIdAtGivenLevel(unitId, 3);
+        materialGroupDao.findMappingsByUnitIdAtGivenLevel(unitId, 3, null);
+
+    List<String> parentMappingIds = null;
+    Collection<MaterialGroupMapping> parentMappings = Collections.emptyList();
 
     if (!CollectionUtils.isEmpty(materialGroupLevel3Mappings)) {
-      setParentCategoriesInfo(unitId, 3, materialGroupLevel3Mappings, null);
+      parentMappings = setParentCategoriesInfo(unitId, 3, materialGroupLevel3Mappings);
+      parentMappingIds =
+          parentMappings.stream().map(MaterialGroupMapping::getId).collect(Collectors.toList());
     }
 
-    materialGroupLevel2Mappings = materialGroupDao.findMappingsByUnitIdAtGivenLevel(unitId, 2);
+    materialGroupLevel2Mappings =
+        materialGroupDao.findMappingsByUnitIdAtGivenLevel(unitId, 2, parentMappingIds);
+    materialGroupLevel2Mappings.addAll(parentMappings);
 
     if (!CollectionUtils.isEmpty(materialGroupLevel2Mappings)) {
-      setParentCategoriesInfo(unitId, 2, materialGroupLevel2Mappings,
-          materialGroupLevel3Mappings);
+      setParentCategoriesInfo(unitId, 2, materialGroupLevel2Mappings);
     }
 
-    materialGroupLevel1Mappings = materialGroupDao.findMappingsByUnitIdAtGivenLevel(unitId, 1);
+    materialGroupLevel1Mappings =
+        materialGroupDao.findMappingsByUnitIdAtGivenLevel(unitId, 1, null);
 
     if (!CollectionUtils.isEmpty(materialGroupLevel1Mappings)) {
       for (MaterialGroupMapping materialGroupLevel1Mapping : materialGroupLevel1Mappings) {
@@ -75,8 +84,7 @@ public class MaterialGroupMappingServiceImpl implements MaterialGroupMappingServ
   }
 
   private Collection<MaterialGroupMapping> setParentCategoriesInfo(Integer unitId, int level,
-      Collection<MaterialGroupMapping> materialGroupMappings,
-      List<MaterialGroupMapping> childMappings) {
+      Collection<MaterialGroupMapping> materialGroupMappings) {
     LOGGER.trace("Processing {} mappings at level {} for unitId: {}", materialGroupMappings.size(),
         level, unitId);
     Map<String, MaterialGroupMapping> parentCategoriesMap = new HashMap<>();
@@ -102,9 +110,16 @@ public class MaterialGroupMappingServiceImpl implements MaterialGroupMappingServ
       setMatGroupInfoLevelValue(level - 1, materialGroupMapping,
           parentMapping.getCompanyCategoryCode(), parentMapping.getCompanyLabel());
 
-      if (!CollectionUtils.isEmpty(childMappings)) {
+      /* if there are any children of this mapping, grand parent category info must be set in it */
+      if (!CollectionUtils.isEmpty(materialGroupMapping.getChildren())) {
         setGrandParentInfoInChildMappings(level, materialGroupMapping.getCompanyCategoryCode(),
-            parentMapping, childMappings);
+            parentMapping, materialGroupMapping.getChildren());
+      }
+
+      /* only if this mapping is at level 3 */
+      if (level == 3) {
+        /* add this mapping into parent mappings children so it can be accessed later */
+        parentMapping.getChildren().add(materialGroupMapping);
       }
     }
 
